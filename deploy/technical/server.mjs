@@ -2,10 +2,11 @@ import http from 'node:http';
 import { randomBytes, createHash } from 'node:crypto';
 import { readFile, appendFile, mkdir, writeFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const port = Number(process.env.PORT || 8080);
-const root = new URL('./public/', import.meta.url).pathname;
-const dataDir = new URL('./data/', import.meta.url).pathname;
+const root = fileURLToPath(new URL('./public/', import.meta.url));
+const dataDir = fileURLToPath(new URL('./data/', import.meta.url));
 await mkdir(dataDir, { recursive: true });
 let openaiKey = '';
 try { openaiKey = (await readFile(new URL('./secrets/openai_api_key', import.meta.url), 'utf8')).trim(); } catch {}
@@ -84,8 +85,11 @@ function extractPhone(value='') {
 }
 function extractEmail(value='') { return String(value).match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0]||''; }
 function extractTelegram(value='') {
-  const match=String(value).match(/(?:^|\s)@([A-Za-z0-9_]{5,32})(?=\s|$|[.,!?;:])/);
-  return match?`@${match[1]}`:'';
+  const text=String(value);
+  const link=text.match(/t\.me\/([A-Za-z0-9_]{5,32})/i);
+  if(link)return `@${link[1]}`;
+  const mention=text.match(/(?:^|\s)@([A-Za-z0-9_]{5,32})(?=\s|$|[.,!?;:])/);
+  return mention?`@${mention[1]}`:'';
 }
 function extractName(value='') {
   return String(value).match(/(?:меня\s+зовут|мо[её]\s+имя)\s+([А-ЯЁA-Z][А-ЯЁа-яёA-Za-z-]+(?:\s+[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z-]+){0,2})/i)?.[1]?.trim()||'';
@@ -197,6 +201,27 @@ const server = http.createServer(async (req, res) => {
     if (req.url === '/admin' || req.url === '/admin/') { if (!requireAdmin(req,res)) return; let file=await readFile(join(root,'admin.html'),'utf8'); file=file.replace('</head>','<link rel="stylesheet" href="/admin-mailings.css"></head>').replace('</body>','<script src="/admin-mailings.js"></script><script src="/admin-communications.js"></script></body>'); res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store'}); return res.end(file); }
     if (req.url === '/api/admin/leads' && req.method === 'GET') { if (!requireAdmin(req,res)) return; return json(res,200,{items:await getLeads()}); }
     if (req.url === '/api/admin/leads' && req.method === 'POST') { if (!requireAdmin(req,res)) return; const body=await readBody(req); const items=await getLeads(); const item={id:`CL-${Date.now()}`,at:new Date().toISOString(),name:String(body.name||''),contact:String(body.contact||''),message:String(body.message||''),source:String(body.source||'Добавлен вручную'),status:'Новый',note:''}; items.unshift(item); await saveLeads(items); return json(res,201,{item}); }
+    if (req.url === '/api/admin/leads/import' && req.method === 'POST') {
+      if (!requireAdmin(req,res)) return;
+      const body=await readBody(req);
+      const lines=String(body.text||'').split('\n').map(line=>line.trim()).filter(Boolean);
+      if(!lines.length)return json(res,400,{error:'Вставьте хотя бы одну строку'});
+      const items=await getLeads();
+      let imported=0,skipped=0;
+      for(const line of lines){
+        const phone=extractPhone(line),email=extractEmail(line),telegram=extractTelegram(line);
+        if(!phone&&!email&&!telegram){skipped++;continue}
+        const dupe=items.find(x=>(phone&&(x.phone===phone||x.contact===phone))||(email&&(x.email===email||x.contact===email))||(telegram&&(x.telegram===telegram||x.contact===telegram||(x.telegramUsername&&`@${x.telegramUsername}`===telegram))));
+        if(dupe){skipped++;continue}
+        const rest=line.split(',').map(part=>part.trim()).filter(Boolean).filter(part=>!extractPhone(part)&&!extractEmail(part)&&!extractTelegram(part));
+        const name=rest[0]||'Без имени';
+        const item={id:`CL-${Date.now()}-${imported}`,at:new Date().toISOString(),name,contact:phone||email||telegram||'',phone,email,telegram,source:'Добавлен вручную (импорт)',status:'Новый',note:''};
+        items.unshift(item);
+        imported++;
+      }
+      await saveLeads(items);
+      return json(res,200,{imported,skipped});
+    }
     if (req.url?.match(/^\/api\/admin\/leads\/[^/]+\/message$/) && req.method === 'POST') {
       if (!requireAdmin(req,res)) return;
       const id=decodeURIComponent(req.url.split('/')[4]); const body=await readBody(req); const message=String(body.message||'').trim();
