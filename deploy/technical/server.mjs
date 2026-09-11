@@ -14,6 +14,13 @@ let kieKey = '';
 try { kieKey = (await readFile(new URL('./secrets/kie_api_key', import.meta.url), 'utf8')).trim(); } catch {}
 let telegramToken = '';
 try { telegramToken = (await readFile(new URL('./secrets/telegram_bot_token', import.meta.url), 'utf8')).trim(); } catch {}
+let greenApiUrl = '';
+try { greenApiUrl = (await readFile(new URL('./secrets/green_api_url', import.meta.url), 'utf8')).trim().replace(/\/+$/,''); } catch {}
+let greenApiIdInstance = '';
+try { greenApiIdInstance = (await readFile(new URL('./secrets/green_api_id_instance', import.meta.url), 'utf8')).trim(); } catch {}
+let greenApiTokenInstance = '';
+try { greenApiTokenInstance = (await readFile(new URL('./secrets/green_api_token_instance', import.meta.url), 'utf8')).trim(); } catch {}
+const whatsappEnabled = Boolean(greenApiUrl && greenApiIdInstance && greenApiTokenInstance);
 let companyKnowledge = '';
 try { companyKnowledge = (await readFile(new URL('./knowledge.md', import.meta.url), 'utf8')).trim(); } catch {}
 let googleSheetsWebhook = '';
@@ -187,6 +194,51 @@ async function startTelegramBot() {
   }
 }
 
+async function greenApiRequest(method, pathSuffix, body) {
+  const response=await fetch(`${greenApiUrl}/waInstance${greenApiIdInstance}${pathSuffix}`,{method,headers:body!==undefined?{'content-type':'application/json'}:{},...(body!==undefined?{body:JSON.stringify(body)}:{})});
+  const text=await response.text();
+  if(!response.ok)throw new Error(`Green API ${pathSuffix.split('?')[0]}: ${response.status} ${text.slice(0,200)}`);
+  return text?JSON.parse(text):null;
+}
+const sendWhatsAppMessage=(chatId,message)=>greenApiRequest('POST',`/sendMessage/${greenApiTokenInstance}`,{chatId,message});
+const receiveWhatsAppNotification=()=>greenApiRequest('GET',`/receiveNotification/${greenApiTokenInstance}?receiveTimeout=20`);
+const deleteWhatsAppNotification=(receiptId)=>greenApiRequest('DELETE',`/deleteNotification/${greenApiTokenInstance}/${receiptId}`);
+const getWhatsAppState=()=>greenApiRequest('GET',`/getStateInstance/${greenApiTokenInstance}`);
+
+async function handleWhatsAppMessage(payload){
+  const chatId=payload.senderData?.chatId;
+  const messageText=payload.messageData?.textMessageData?.textMessage||payload.messageData?.extendedTextMessageData?.text||'';
+  if(!chatId||!messageText)return;
+  const contact=`wa:${String(chatId).replace(/@c\.us$/,'')}`;
+  const name=payload.senderData?.senderContactName||payload.senderData?.senderName||'Клиент WhatsApp';
+  const items=await getLeads();
+  const history=items.filter(x=>x.contact===contact).slice(0,8).reverse().flatMap(x=>[{role:'user',content:[{type:'input_text',text:x.message}]},...(x.botReply?[{role:'assistant',content:[{type:'output_text',text:x.botReply}]}]:[])]);
+  const priorRecords=items.filter(x=>x.contact===contact);
+  const profile=buildClientProfile(priorRecords,{name,message:messageText,contact,channel:'WhatsApp'});
+  let reply='Спасибо! Уточните, пожалуйста, товар, количество или размеры и город доставки.';
+  let provider='fallback';
+  try{const answer=await askAI(messageText,history,profile);reply=answer.text||reply;provider=answer.text?answer.provider:'fallback'}catch(error){console.error(new Date().toISOString(),error.message)}
+  const record=applyClientProfile({id:`CL-${Date.now()}`,at:new Date().toISOString(),sessionId:contact,name,contact,message:messageText,botReply:reply,aiProvider:provider,source:'WhatsApp',funnelStage:funnelStage(history.length/2,profile.phone||profile.email||profile.telegram),status:history.length?'В работе':'Новый',note:''},profile);
+  items.unshift(record);
+  await saveLeads(items); void syncGoogleSheet(items[0],items).catch(error=>console.error(new Date().toISOString(),error.message));
+  await sendWhatsAppMessage(chatId,reply);
+}
+async function startWhatsAppBot(){
+  if(!whatsappEnabled)return;
+  try{const state=await getWhatsAppState();console.log(`Green API (WhatsApp) instance state: ${state?.stateInstance}`)}catch(error){console.error(error.message)}
+  while(true){
+    try{
+      const notification=await receiveWhatsAppNotification();
+      if(!notification)continue;
+      const {receiptId,body:payload}=notification;
+      if(payload?.typeWebhook==='incomingMessageReceived'){
+        await handleWhatsAppMessage(payload).catch(error=>console.error(new Date().toISOString(),error.message));
+      }
+      if(receiptId)await deleteWhatsAppNotification(receiptId).catch(error=>console.error(new Date().toISOString(),error.message));
+    }catch(error){console.error(new Date().toISOString(),error.message);await wait(3000)}
+  }
+}
+
 const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml' };
 const json = (res, status, body) => { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'access-control-allow-origin': '*' }); res.end(JSON.stringify(body)); };
 const readBody = async (req) => { const parts=[]; for await (const part of req) parts.push(part); return JSON.parse(Buffer.concat(parts).toString('utf8') || '{}'); };
@@ -194,7 +246,7 @@ const readTextBody = async (req) => { const parts=[]; for await (const part of r
 
 const server = http.createServer(async (req, res) => {
   try {
-    if (req.method === 'GET' && req.url === '/health') return json(res, 200, { status: 'ok', service: 'metallik-bot-technical', aiProvider:kieKey?'kie':openaiKey?'openai':'none',googleSheets:Boolean(googleSheetsWebhook&&googleSheetsToken) });
+    if (req.method === 'GET' && req.url === '/health') return json(res, 200, { status: 'ok', service: 'metallik-bot-technical', aiProvider:kieKey?'kie':openaiKey?'openai':'none',googleSheets:Boolean(googleSheetsWebhook&&googleSheetsToken),whatsapp:whatsappEnabled });
     if (req.method === 'GET' && req.url?.startsWith('/admin/login')) { const file=await readFile(join(root,'login.html')); res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store'}); return res.end(file); }
     if (req.method === 'POST' && req.url === '/admin/login') { const body=new URLSearchParams(await readTextBody(req)); if(body.get('username')==='admin'&&body.get('password')===adminPassword&&adminPassword){res.writeHead(302,{location:'/admin','set-cookie':`metallik_admin=${adminSession}; HttpOnly; SameSite=Lax; Path=/; Max-Age=28800`});return res.end();}res.writeHead(302,{location:'/admin/login?error=1'});return res.end(); }
     if (req.method === 'GET' && req.url === '/admin/logout') { res.writeHead(302,{location:'/admin/login','set-cookie':'metallik_admin=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0'}); return res.end(); }
@@ -227,11 +279,14 @@ const server = http.createServer(async (req, res) => {
       const id=decodeURIComponent(req.url.split('/')[4]); const body=await readBody(req); const message=String(body.message||'').trim();
       if(!message||message.length>2000)return json(res,400,{error:'Введите сообщение длиной до 2000 символов'});
       const items=await getLeads(); const index=items.findIndex(x=>x.id===id); if(index<0)return json(res,404,{error:'Клиент не найден'});
-      const lead=items[index]; const telegramId=[lead.sessionId,lead.contact].find(x=>String(x||'').startsWith('tg:'));
+      const lead=items[index]; const telegramId=[lead.sessionId,lead.contact].find(x=>String(x||'').startsWith('tg:')); const whatsappId=[lead.sessionId,lead.contact].find(x=>String(x||'').startsWith('wa:'));
       let channel='';
       if(telegramId){
         if(!telegramToken)return json(res,409,{error:'Telegram-бот не подключён'});
         await telegramCall('sendMessage',{chat_id:String(telegramId).slice(3),text:message}); channel='Telegram';
+      }else if(whatsappId){
+        if(!whatsappEnabled)return json(res,409,{error:'WhatsApp (Green API) не подключён'});
+        await sendWhatsAppMessage(`${String(whatsappId).slice(3)}@c.us`,message); channel='WhatsApp';
       }else if(lead.sessionId){ channel='Чат на сайте'; }
       else return json(res,409,{error:'Для отправки по номеру подключите WhatsApp или SMS. Сейчас можно позвонить клиенту по кнопке в карточке.',phone:lead.phone||lead.contact||''});
       const sent={id:`MSG-${Date.now()}`,at:new Date().toISOString(),message,channel};
@@ -267,13 +322,25 @@ const server = http.createServer(async (req, res) => {
       if (!requireAdmin(req,res)) return;
       const id=decodeURIComponent(req.url.split('/')[4]); const items=await getCampaigns(); const item=items.find(x=>x.id===id);
       if(!item)return json(res,404,{error:'Рассылка не найдена'});
-      if(item.channel!=='Telegram')return json(res,409,{error:`Канал ${item.channel} ещё не подключён`,needsCredentials:true});
-      if(!telegramToken)return json(res,409,{error:'Telegram-токен не установлен',needsCredentials:true});
+      if(item.channel!=='Telegram'&&item.channel!=='WhatsApp')return json(res,409,{error:`Канал ${item.channel} ещё не подключён`,needsCredentials:true});
+      if(item.channel==='Telegram'&&!telegramToken)return json(res,409,{error:'Telegram-токен не установлен',needsCredentials:true});
+      if(item.channel==='WhatsApp'&&!whatsappEnabled)return json(res,409,{error:'WhatsApp (Green API) не подключён',needsCredentials:true});
       let sent=0,failed=0;
       for(const recipient of item.recipients){
-        const raw=String(recipient.contact); const chatId=raw.startsWith('tg:')?raw.slice(3):/^\d+$/.test(raw)?raw:'';
-        if(!chatId){recipient.status='Ошибка: нужен chat_id';failed++;continue}
-        try{await telegramCall('sendMessage',{chat_id:chatId,text:item.message});recipient.status='Отправлено';recipient.sentAt=new Date().toISOString();sent++}catch(error){recipient.status='Ошибка отправки';recipient.error=error.message;failed++}
+        const raw=String(recipient.contact);
+        try{
+          if(item.channel==='Telegram'){
+            const chatId=raw.startsWith('tg:')?raw.slice(3):/^\d+$/.test(raw)?raw:'';
+            if(!chatId)throw new Error('нужен chat_id');
+            await telegramCall('sendMessage',{chat_id:chatId,text:item.message});
+          }else{
+            const digits=raw.replace(/\D/g,'');
+            const chatId=raw.startsWith('wa:')?`${raw.slice(3)}@c.us`:digits.length>=10&&digits.length<=15?`${digits}@c.us`:'';
+            if(!chatId)throw new Error('нужен номер телефона');
+            await sendWhatsAppMessage(chatId,item.message);
+          }
+          recipient.status='Отправлено';recipient.sentAt=new Date().toISOString();sent++;
+        }catch(error){recipient.status=`Ошибка: ${error.message}`;failed++}
       }
       item.status=sent&&failed?'Отправлена частично':sent?'Отправлена':'Ошибка'; item.lastAttemptAt=new Date().toISOString(); await saveCampaigns(items);
       return json(res,200,{item,sent,failed,message:`Отправлено: ${sent}. Ошибок: ${failed}.`});
@@ -313,3 +380,4 @@ const server = http.createServer(async (req, res) => {
 });
 server.listen(port, '0.0.0.0', () => console.log(`Metallik technical bot listening on ${port}`));
 void startTelegramBot();
+void startWhatsAppBot();

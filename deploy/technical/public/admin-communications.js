@@ -22,9 +22,11 @@
   const telegramName=x=>String(x.telegram||x.telegramUsername||'').replace(/^@/,'');
   const phone=x=>x.phone||(/^\+?[\d ()-]{7,}$/.test(x.contact||'')?x.contact:'');
   const time=at=>new Date(at).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
+  const whatsappNumber=x=>{const raw=String(x.sessionId||x.contact||'');return raw.startsWith('wa:')?raw.slice(3).replace(/@c\.us$/,''):''};
   const actionLinks=x=>{
-    const links=[]; const tg=telegramName(x); const tel=phone(x);
+    const links=[]; const tg=telegramName(x); const tel=phone(x); const wa=whatsappNumber(x);
     if(tg)links.push('<a class="contact-action" target="_blank" rel="noopener" href="https://t.me/'+esc(tg)+'">Открыть Telegram</a>');
+    if(wa)links.push('<a class="contact-action" target="_blank" rel="noopener" href="https://wa.me/'+esc(wa)+'">Открыть WhatsApp</a>');
     if(tel)links.push('<a class="contact-action" href="tel:'+esc(tel.replace(/[^+\d]/g,''))+'">Позвонить</a>');
     return links.join('');
   };
