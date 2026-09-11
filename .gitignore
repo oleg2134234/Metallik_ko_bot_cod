@@ -36,3 +36,10 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+
+# packaged delivery archives (regenerable, not source)
+*.tar.gz
+
+# runtime secrets and data for deploy/technical
+deploy/technical/secrets/
+deploy/technical/data/
