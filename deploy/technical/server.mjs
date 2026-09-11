@@ -240,7 +240,26 @@ const server = http.createServer(async (req, res) => {
       void syncGoogleSheet(syncRecord,items).catch(error=>console.error(new Date().toISOString(),error.message));
       return json(res,200,{sent,lead});
     }
-    if (req.url?.startsWith('/api/admin/leads/') && req.method === 'PATCH') { if (!requireAdmin(req,res)) return; const id=decodeURIComponent(req.url.split('/').pop()); const body=await readBody(req); const items=await getLeads(); const index=items.findIndex(x=>x.id===id); if(index<0)return json(res,404,{error:'Клиент не найден'}); items[index]={...items[index],status:String(body.status||items[index].status),note:String(body.note??items[index].note)}; await saveLeads(items); return json(res,200,{item:items[index]}); }
+    if (req.url?.startsWith('/api/admin/leads/') && req.method === 'PATCH') {
+      if (!requireAdmin(req,res)) return;
+      const id=decodeURIComponent(req.url.split('/').pop());
+      const body=await readBody(req);
+      const items=await getLeads();
+      const index=items.findIndex(x=>x.id===id);
+      if(index<0)return json(res,404,{error:'Клиент не найден'});
+      const current=items[index];
+      const next={...current,status:String(body.status||current.status),note:String(body.note??current.note)};
+      if(body.name!==undefined)next.name=String(body.name).trim();
+      if(body.phone!==undefined)next.phone=String(body.phone).trim();
+      if(body.email!==undefined)next.email=String(body.email).trim();
+      if(body.telegram!==undefined)next.telegram=String(body.telegram).trim();
+      if(body.phone!==undefined||body.email!==undefined||body.telegram!==undefined){
+        next.contact=next.phone||next.email||next.telegram||current.contact;
+      }
+      items[index]=next;
+      await saveLeads(items);
+      return json(res,200,{item:items[index]});
+    }
     if (req.url === '/api/admin/export.csv' && req.method === 'GET') { if (!requireAdmin(req,res)) return; const items=await getLeads(); const esc=v=>`"${String(v??'').replaceAll('"','""')}"`; const csv='Дата,Имя,Контакт,Источник,Статус,Сообщение,Заметка\n'+items.map(x=>[x.at,x.name,x.contact,x.source,x.status,x.message,x.note].map(esc).join(',')).join('\n'); res.writeHead(200,{'content-type':'text/csv; charset=utf-8','content-disposition':'attachment; filename="metallik-clients.csv"'}); return res.end('\uFEFF'+csv); }
     if (req.url === '/api/admin/campaigns' && req.method === 'GET') { if (!requireAdmin(req,res)) return; return json(res,200,{items:await getCampaigns()}); }
     if (req.url === '/api/admin/campaigns' && req.method === 'POST') { if (!requireAdmin(req,res)) return; const body=await readBody(req); const recipients=String(body.recipients||'').split(/[\n,;]+/).map(x=>x.trim()).filter(Boolean); if(!body.title||!body.message||!recipients.length)return json(res,400,{error:'Заполните название, текст и получателей'}); const items=await getCampaigns(); const item={id:`CMP-${Date.now()}`,createdAt:new Date().toISOString(),title:String(body.title),channel:String(body.channel||'Telegram'),message:String(body.message),recipients:recipients.map(contact=>({contact,status:'В очереди',sentAt:null,repliedAt:null,reply:''})),status:'Черновик'}; items.unshift(item); await saveCampaigns(items); return json(res,201,{item}); }
