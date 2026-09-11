@@ -1,4 +1,4 @@
-CREATE TABLE `contacts` (`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL, `name` text NOT NULL, `company` text, `email` text, `phone` text, `city` text, `source` text DEFAULT 'website' NOT NULL, `created_at` integer NOT NULL);
+CREATE TABLE `contacts` (`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL, `name` text NOT NULL, `company` text, `email` text, `phone` text, `telegram` text, `city` text, `source` text DEFAULT 'website' NOT NULL, `created_at` integer NOT NULL);
 --> statement-breakpoint
 CREATE INDEX `idx_contacts_email` ON `contacts` (`email`);
 --> statement-breakpoint
